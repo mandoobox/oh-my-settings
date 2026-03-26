@@ -65,6 +65,10 @@ local HELP_SECTIONS = {
   },
 }
 
+if IS_WINDOWS then
+  table.insert(HELP_SECTIONS[1].entries, 2, { key = 't', description = 'shell launcher' })
+end
+
 local function file_exists(path)
   local handle = io.open(path, 'r')
   if handle then
@@ -95,6 +99,9 @@ local function first_existing_path(paths)
   end
   return nil
 end
+
+local get_cwd_uri
+local path_from_uri
 
 local function configure_platform(config)
   if IS_WINDOWS then
@@ -184,21 +191,199 @@ local function build_window_frame_fonts()
   return fonts
 end
 
-local function get_cwd_uri(source)
+local function current_spawn_cwd(pane)
+  local cwd = path_from_uri(get_cwd_uri(pane))
+  if cwd == '' then
+    return nil
+  end
+  return cwd
+end
+
+local function windows_shell_specs()
+  local specs = {}
+
+  if not IS_WINDOWS then
+    return specs
+  end
+
+  local git_bash = 'C:\\Program Files\\Git\\bin\\bash.exe'
+  if file_exists(git_bash) then
+    specs.gitbash = {
+      label = 'Git Bash',
+      args = { git_bash, '-i', '-l' },
+    }
+  end
+
+  specs.powershell = {
+    label = 'PowerShell',
+    args = { 'powershell.exe', '-NoLogo' },
+  }
+
+  specs.cmd = {
+    label = 'Command Prompt',
+    args = { 'cmd.exe' },
+  }
+
+  return specs
+end
+
+local function spawn_command_for_pane(spec, pane)
+  local command = {
+    args = spec.args,
+    domain = 'CurrentPaneDomain',
+  }
+
+  local cwd = current_spawn_cwd(pane)
+  if cwd then
+    command.cwd = cwd
+  end
+
+  return command
+end
+
+local function replace_pane_with_shell(window, pane, spec)
+  if not pane or not spec then
+    return
+  end
+
+  local new_pane = pane:split {
+    direction = 'Bottom',
+    size = 0.5,
+    args = spec.args,
+    cwd = current_spawn_cwd(pane),
+    domain = 'CurrentPaneDomain',
+  }
+
+  if new_pane then
+    new_pane:activate()
+  end
+
+  window:perform_action(act.CloseCurrentPane { confirm = false }, pane)
+end
+
+local function show_windows_shell_picker(window, pane)
+  if not IS_WINDOWS then
+    return
+  end
+
+  local specs = windows_shell_specs()
+  local order = { 'gitbash', 'powershell', 'cmd' }
+  local choices = {}
+
+  for _, id in ipairs(order) do
+    local spec = specs[id]
+    if spec then
+      table.insert(choices, {
+        id = id .. ':newtab',
+        label = spec.label .. ' (new tab)',
+      })
+      table.insert(choices, {
+        id = id .. ':replace',
+        label = spec.label .. ' (replace pane)',
+      })
+    end
+  end
+
+  window:perform_action(
+    act.InputSelector {
+      title = 'Launch shell',
+      fuzzy = true,
+      choices = choices,
+      action = wezterm.action_callback(function(win, target_pane, id)
+        if not id then
+          return
+        end
+
+        local shell_id, mode = id:match '^([^:]+):([^:]+)$'
+        local target_spec = windows_shell_specs()[shell_id]
+        if not target_spec then
+          return
+        end
+
+        if mode == 'newtab' then
+          win:perform_action(act.SpawnCommandInNewTab(spawn_command_for_pane(target_spec, target_pane)), target_pane)
+          return
+        end
+
+        if mode == 'replace' then
+          replace_pane_with_shell(win, target_pane, target_spec)
+        end
+      end),
+    },
+    pane
+  )
+end
+
+local function build_mouse_bindings()
+  local bindings = {
+    {
+      event = { Up = { streak = 1, button = 'Left' } },
+      mods = 'NONE',
+      action = act.CompleteSelection 'Clipboard',
+    },
+    {
+      event = { Up = { streak = 1, button = 'Left' } },
+      mods = 'CTRL',
+      action = act.OpenLinkAtMouseCursor,
+    },
+    {
+      event = { Down = { streak = 1, button = 'Left' } },
+      mods = 'CTRL',
+      action = act.Nop,
+    },
+    {
+      event = { Down = { streak = 1, button = 'Right' } },
+      mods = 'NONE',
+      action = act.PasteFrom 'Clipboard',
+    },
+    {
+      event = { Down = { streak = 1, button = 'Middle' } },
+      mods = 'NONE',
+      action = act.PasteFrom 'Clipboard',
+    },
+  }
+
+  if IS_DARWIN then
+    table.insert(bindings, 4, {
+      event = { Up = { streak = 1, button = 'Left' } },
+      mods = 'SUPER',
+      action = act.OpenLinkAtMouseCursor,
+    })
+    table.insert(bindings, 5, {
+      event = { Down = { streak = 1, button = 'Left' } },
+      mods = 'SUPER',
+      action = act.Nop,
+    })
+  end
+
+  return bindings
+end
+
+get_cwd_uri = function(source)
   if not source then
     return nil
   end
 
-  if type(source.get_current_working_dir) == 'function' then
+  local ok_getter, getter = pcall(function()
+    return source.get_current_working_dir
+  end)
+  if ok_getter and type(getter) == 'function' then
     local ok, value = pcall(function()
-      return source:get_current_working_dir()
+      return getter(source)
     end)
     if ok then
       return value
     end
   end
 
-  return source.current_working_dir
+  local ok_cwd, cwd = pcall(function()
+    return source.current_working_dir
+  end)
+  if ok_cwd then
+    return cwd
+  end
+
+  return nil
 end
 
 local function safe_field(source, field)
@@ -236,7 +421,7 @@ local function basename(path)
   return normalized:match('([^/]+)$') or normalized
 end
 
-local function path_from_uri(uri)
+path_from_uri = function(uri)
   if not uri then
     return ''
   end
@@ -490,18 +675,29 @@ local function build_tmux_keys()
 
   push_key(keys, 'b', 'LEADER', act.SendKey { key = 'b', mods = 'CTRL' })
   push_key(keys, 'c', 'LEADER', act.SpawnTab 'CurrentPaneDomain')
+  if IS_WINDOWS then
+    push_key(keys, 't', 'LEADER', wezterm.action_callback(show_windows_shell_picker))
+  end
   push_key(keys, 'n', 'LEADER', act.ActivateTabRelative(1))
   push_key(keys, 'p', 'LEADER', act.ActivateTabRelative(-1))
   push_key(keys, 'l', 'LEADER', act.ActivateLastTab)
   push_key(keys, 'w', 'LEADER', wezterm.action_callback(show_window_picker))
   push_key(keys, '&', 'LEADER', act.CloseCurrentTab { confirm = true })
+  push_key(keys, 'phys:7', 'LEADER|SHIFT', act.CloseCurrentTab { confirm = true })
   push_key(keys, 'h', 'LEADER', wezterm.action_callback(show_help))
 
   push_key(keys, '%', 'LEADER', act.SplitHorizontal { domain = 'CurrentPaneDomain' })
   push_key(keys, '"', 'LEADER', act.SplitVertical { domain = 'CurrentPaneDomain' })
+  push_key(keys, 'phys:5', 'LEADER|SHIFT', act.SplitHorizontal { domain = 'CurrentPaneDomain' })
+  push_key(keys, 'phys:Quote', 'LEADER|SHIFT', act.SplitVertical { domain = 'CurrentPaneDomain' })
   push_key(keys, 'x', 'LEADER', act.CloseCurrentPane { confirm = true })
   push_key(keys, 'z', 'LEADER', act.TogglePaneZoomState)
   push_key(keys, '!', 'LEADER', wezterm.action_callback(function(_, pane)
+    if pane then
+      pane:move_to_new_tab()
+    end
+  end))
+  push_key(keys, 'phys:1', 'LEADER|SHIFT', wezterm.action_callback(function(_, pane)
     if pane then
       pane:move_to_new_tab()
     end
@@ -512,6 +708,8 @@ local function build_tmux_keys()
   push_key(keys, 'q', 'LEADER', act.PaneSelect { alphabet = '1234567890' })
   push_key(keys, '{', 'LEADER', act.RotatePanes 'CounterClockwise')
   push_key(keys, '}', 'LEADER', act.RotatePanes 'Clockwise')
+  push_key(keys, 'phys:LeftBracket', 'LEADER|SHIFT', act.RotatePanes 'CounterClockwise')
+  push_key(keys, 'phys:RightBracket', 'LEADER|SHIFT', act.RotatePanes 'Clockwise')
   push_key(keys, '[', 'LEADER', act.ActivateCopyMode)
   push_key(keys, ']', 'LEADER', act.PasteFrom 'Clipboard')
 
@@ -519,16 +717,19 @@ local function build_tmux_keys()
   push_key(keys, '$', 'LEADER', rename_workspace_action())
   push_key(keys, '(', 'LEADER', act.SwitchWorkspaceRelative(-1))
   push_key(keys, ')', 'LEADER', act.SwitchWorkspaceRelative(1))
+  push_key(keys, 'phys:4', 'LEADER|SHIFT', rename_workspace_action())
+  push_key(keys, 'phys:9', 'LEADER|SHIFT', act.SwitchWorkspaceRelative(-1))
+  push_key(keys, 'phys:0', 'LEADER|SHIFT', act.SwitchWorkspaceRelative(1))
 
   for index = 0, 9 do
     push_key(keys, tostring(index), 'LEADER', act.ActivateTab(index))
   end
 
   local directions = {
-    { key = 'LeftArrow', direction = 'Left' },
-    { key = 'DownArrow', direction = 'Down' },
-    { key = 'UpArrow', direction = 'Up' },
-    { key = 'RightArrow', direction = 'Right' },
+    { key = 'phys:LeftArrow', direction = 'Left' },
+    { key = 'phys:DownArrow', direction = 'Down' },
+    { key = 'phys:UpArrow', direction = 'Up' },
+    { key = 'phys:RightArrow', direction = 'Right' },
   }
 
   for _, item in ipairs(directions) do
@@ -590,7 +791,7 @@ end
 
 configure_platform(config)
 
-config.leader = { key = 'b', mods = 'CTRL', timeout_milliseconds = 1200 }
+config.leader = { key = 'b', mods = 'CTRL', timeout_milliseconds = 2000 }
 config.disable_default_key_bindings = true
 config.key_map_preference = 'Mapped'
 
@@ -647,23 +848,7 @@ config.colors = {
   },
 }
 
-config.mouse_bindings = {
-  {
-    event = { Up = { streak = 1, button = 'Left' } },
-    mods = 'NONE',
-    action = act.CompleteSelection 'Clipboard',
-  },
-  {
-    event = { Down = { streak = 1, button = 'Right' } },
-    mods = 'NONE',
-    action = act.PasteFrom 'Clipboard',
-  },
-  {
-    event = { Down = { streak = 1, button = 'Middle' } },
-    mods = 'NONE',
-    action = act.PasteFrom 'Clipboard',
-  },
-}
+config.mouse_bindings = build_mouse_bindings()
 
 config.keys = build_tmux_keys()
 
