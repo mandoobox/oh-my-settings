@@ -1,426 +1,703 @@
 local wezterm = require 'wezterm'
-local act = wezterm.action -- 키바인딩 액션을 짧게 쓰기 위한 변수
+local act = wezterm.action
 local config = wezterm.config_builder()
-local home = (os.getenv('HOME') or os.getenv('USERPROFILE') or ''):gsub('\\',
-                                                                        '/')
-                 :gsub('/$', '')
-local home_folder = home:match('([^/]+)$') or ''
--- ---------------------------------------------------------
--- [OS 설정]
--- ---------------------------------------------------------
-if wezterm.target_triple:find("windows") then
-    -- 기본 쉘 설정 (기본값은 Git Bash)
-    local git_bash_path = 'C:\\Program Files\\Git\\bin\\bash.exe'
-    local f = io.open(git_bash_path, "r")
 
-    if f ~= nil then
-        -- 1순위: Git Bash가 있으면 실행
-        io.close(f)
-        config.default_prog = {git_bash_path, '-i', '-l'}
-    else
-        -- 2순위: Git Bash가 없으면 PowerShell 실행
-        config.default_prog = {'powershell.exe', '-NoLogo'}
-    end
-    -- config.default_prog = { 'C:\\Program Files\\Git\\bin\\bash.exe', '-i', '-l' }
+local IS_WINDOWS = wezterm.target_triple:find 'windows' ~= nil
+local IS_DARWIN = wezterm.target_triple:find 'darwin' ~= nil
+local HOME = (wezterm.home_dir or os.getenv 'HOME' or os.getenv 'USERPROFILE' or ''):gsub('\\', '/'):gsub('/$', '')
 
-    -- 윈도우에서 선택 가능한 쉘 메뉴 구성
-    config.launch_menu = {
-        {
-            label = 'Git Bash',
-            args = {'C:\\Program Files\\Git\\bin\\bash.exe', '-i', '-l'}
-        }, {label = 'PowerShell Core (pwsh)', args = {'pwsh.exe', '-NoLogo'}},
-        {label = 'Windows PowerShell', args = {'powershell.exe', '-NoLogo'}},
-        {label = 'Command Prompt (CMD)', args = {'cmd.exe'}}
-    }
-    config.font_size = 11.0
+local TOKYO_NIGHT = {
+  bg = '#1a1b26',
+  surface = '#1f2335',
+  surface_alt = '#24283b',
+  border = '#3b4261',
+  text = '#c0caf5',
+  muted = '#7a88cf',
+  accent = '#7aa2f7',
+  accent_alt = '#bb9af7',
+  success = '#9ece6a',
+  warning = '#e0af68',
+}
+
+local HELP_SECTIONS = {
+  {
+    title = 'Windows / Tabs',
+    entries = {
+      { key = 'c', description = 'new tab' },
+      { key = 'n / p', description = 'next / previous tab' },
+      { key = 'l', description = 'last active tab' },
+      { key = '0-9', description = 'jump to tab index' },
+      { key = 'w', description = 'list tabs' },
+      { key = '&', description = 'close current tab' },
+    },
+  },
+  {
+    title = 'Panes',
+    entries = {
+      { key = '%', description = 'split left/right' },
+      { key = '"', description = 'split top/bottom' },
+      { key = 'o', description = 'next pane' },
+      { key = 'q', description = 'select pane by number' },
+      { key = 'x', description = 'close pane' },
+      { key = 'z', description = 'toggle zoom' },
+      { key = '!', description = 'move pane to new tab' },
+      { key = '{ / }', description = 'rotate panes' },
+      { key = 'Arrow keys', description = 'move focus' },
+      { key = 'Alt + Arrow keys', description = 'resize pane' },
+    },
+  },
+  {
+    title = 'Workspaces',
+    entries = {
+      { key = 's', description = 'list workspaces' },
+      { key = '$', description = 'rename workspace' },
+      { key = '( / )', description = 'previous / next workspace' },
+    },
+  },
+  {
+    title = 'Clipboard / Help',
+    entries = {
+      { key = '[', description = 'copy mode' },
+      { key = ']', description = 'paste clipboard' },
+      { key = 'h', description = 'open this help' },
+      { key = 'b', description = 'send literal Ctrl+b' },
+    },
+  },
+}
+
+local function file_exists(path)
+  local handle = io.open(path, 'r')
+  if handle then
+    handle:close()
+    return true
+  end
+  return false
 end
 
-local CMD = "CTRL"
-local OPT = "ALT"
-if wezterm.target_triple:find("darwin") then
-    CMD = "SUPER"
-    OPT = "OPT" -- 맥에서는 명시적으로 OPT(Option) 사용
-    -- 맥에서 Option 키를 눌렀을 때 특수 문자가 입력되지 않고 단축키로 작동하게 설정
+local function push_spawn(menu, label, args, check_path)
+  if check_path and not file_exists(check_path) then
+    return
+  end
+
+  local entry = { label = label }
+  if args then
+    entry.args = args
+  end
+
+  table.insert(menu, entry)
+end
+
+local function first_existing_path(paths)
+  for _, path in ipairs(paths) do
+    if file_exists(path) then
+      return path
+    end
+  end
+  return nil
+end
+
+local function configure_platform(config)
+  if IS_WINDOWS then
+    local git_bash = 'C:\\Program Files\\Git\\bin\\bash.exe'
+    config.default_prog = file_exists(git_bash) and { git_bash, '-i', '-l' } or { 'powershell.exe', '-NoLogo' }
+
+    local launch_menu = {}
+    push_spawn(launch_menu, 'Git Bash', { git_bash, '-i', '-l' }, git_bash)
+    push_spawn(launch_menu, 'PowerShell Core', { 'pwsh.exe', '-NoLogo' })
+    push_spawn(launch_menu, 'Windows PowerShell', { 'powershell.exe', '-NoLogo' })
+    push_spawn(launch_menu, 'Command Prompt', { 'cmd.exe' })
+    config.launch_menu = launch_menu
+    return
+  end
+
+  local launch_menu = {}
+  push_spawn(launch_menu, 'Default Shell')
+
+  local zsh = first_existing_path { '/bin/zsh', '/usr/bin/zsh' }
+  local bash = first_existing_path { '/bin/bash', '/usr/bin/bash', '/usr/local/bin/bash', '/opt/homebrew/bin/bash' }
+  local fish = first_existing_path { '/usr/bin/fish', '/usr/local/bin/fish', '/opt/homebrew/bin/fish' }
+
+  push_spawn(launch_menu, 'zsh', zsh and { zsh, '-l' } or nil, zsh)
+  push_spawn(launch_menu, 'bash', bash and { bash, '-l' } or nil, bash)
+  push_spawn(launch_menu, 'fish', fish and { fish, '-l' } or nil, fish)
+
+  if #launch_menu > 0 then
+    config.launch_menu = launch_menu
+  end
+
+  if IS_DARWIN then
     config.send_composed_key_when_left_alt_is_pressed = false
     config.send_composed_key_when_right_alt_is_pressed = false
-
-    -- 맥 초기 창 크기 설정
-    config.initial_cols = 110
-    config.initial_rows = 35
-    config.font_size = 13.0
+  end
 end
 
--- ---------------------------------------------------------
--- [스타일] 폰트, 투명도, 창 모양 설정
--- ---------------------------------------------------------
+local function build_terminal_fonts()
+  local fonts = {
+    { family = 'JetBrains Mono', weight = 'Regular' },
+    { family = 'Sarasa Mono K', weight = 'Regular' },
+    { family = 'Sarasa Term K', weight = 'Regular' },
+  }
 
--- 폰트 설정
-config.line_height = 1.0
-config.font = wezterm.font('JetBrains Mono', {weight = 'Medium'})
+  if IS_WINDOWS then
+    table.insert(fonts, { family = 'Cascadia Mono', weight = 'Regular' })
+    table.insert(fonts, { family = 'Consolas', weight = 'Regular' })
+    table.insert(fonts, { family = 'Malgun Gothic', scale = 1.08 })
+    table.insert(fonts, { family = 'Noto Sans KR', scale = 1.08 })
+  elseif IS_DARWIN then
+    table.insert(fonts, { family = 'Menlo', weight = 'Regular' })
+    table.insert(fonts, { family = 'SF Mono', weight = 'Regular' })
+    table.insert(fonts, { family = 'Apple SD Gothic Neo', scale = 1.08 })
+    table.insert(fonts, { family = 'Noto Sans CJK KR', scale = 1.08 })
+  else
+    table.insert(fonts, { family = 'DejaVu Sans Mono', weight = 'Regular' })
+    table.insert(fonts, { family = 'Liberation Mono', weight = 'Regular' })
+    table.insert(fonts, { family = 'Noto Sans CJK KR', scale = 1.08 })
+    table.insert(fonts, { family = 'Noto Sans KR', scale = 1.08 })
+  end
 
--- 색상 테마 'Catppuccin Mocha', 'Tokyo Night', 'Dracula', 'Nord', 'Gruvbox Dark'
-config.color_scheme = 'Tokyo Night'
-config.window_decorations = "RESIZE" -- 윈도우 타이틀바 제거
+  return fonts
+end
 
-config.window_padding = {left = 10, right = 10, top = 10, bottom = 10}
-config.inactive_pane_hsb = {saturation = 0.9, brightness = 0.7}
-config.scrollback_lines = 10000 -- 기본값은 좀 적어서 10000줄로 늘림
+local function build_window_frame_fonts()
+  local fonts = {
+    { family = 'JetBrains Mono', weight = 'Bold' },
+    { family = 'Sarasa Mono K', weight = 'Bold' },
+    { family = 'Sarasa Term K', weight = 'Bold' },
+  }
 
--- 커서 스타일 (깜빡이는 바 형태)
+  if IS_WINDOWS then
+    table.insert(fonts, { family = 'Cascadia Mono', weight = 'Bold' })
+    table.insert(fonts, { family = 'Consolas', weight = 'Bold' })
+    table.insert(fonts, { family = 'Malgun Gothic', weight = 'Bold' })
+  elseif IS_DARWIN then
+    table.insert(fonts, { family = 'Menlo', weight = 'Regular' })
+    table.insert(fonts, { family = 'SF Mono', weight = 'Regular' })
+    table.insert(fonts, { family = 'Apple SD Gothic Neo', weight = 'Bold' })
+  else
+    table.insert(fonts, { family = 'DejaVu Sans Mono', weight = 'Bold' })
+    table.insert(fonts, { family = 'Liberation Mono', weight = 'Bold' })
+    table.insert(fonts, { family = 'Noto Sans CJK KR', weight = 'Bold' })
+  end
+
+  table.insert(fonts, { family = 'NanumSquare Neo', weight = 'Bold' })
+
+  return fonts
+end
+
+local function get_cwd_uri(source)
+  if not source then
+    return nil
+  end
+
+  if type(source.get_current_working_dir) == 'function' then
+    local ok, value = pcall(function()
+      return source:get_current_working_dir()
+    end)
+    if ok then
+      return value
+    end
+  end
+
+  return source.current_working_dir
+end
+
+local function safe_field(source, field)
+  if not source then
+    return nil
+  end
+
+  local ok, value = pcall(function()
+    return source[field]
+  end)
+  if ok then
+    return value
+  end
+  return nil
+end
+
+local function normalize_path(path)
+  if not path or path == '' then
+    return ''
+  end
+
+  local normalized = path:gsub('\\', '/'):gsub('/$', '')
+  normalized = normalized:gsub('^/([A-Za-z])/', function(drive)
+    return drive:upper() .. ':/'
+  end)
+
+  return normalized
+end
+
+local function basename(path)
+  local normalized = normalize_path(path)
+  if normalized == '' then
+    return ''
+  end
+  return normalized:match('([^/]+)$') or normalized
+end
+
+local function path_from_uri(uri)
+  if not uri then
+    return ''
+  end
+
+  local path = ''
+  if type(uri) == 'userdata' or type(uri) == 'table' then
+    path = safe_field(uri, 'file_path') or safe_field(uri, 'path') or ''
+  elseif type(uri) == 'string' then
+    if wezterm.url and type(wezterm.url.parse) == 'function' then
+      local ok, parsed = pcall(wezterm.url.parse, uri)
+      if ok and parsed then
+        path = safe_field(parsed, 'file_path') or safe_field(parsed, 'path') or uri
+      else
+        path = uri:match 'file://[^/]*(/.+)' or uri
+      end
+    else
+      path = uri:match 'file://[^/]*(/.+)' or uri
+    end
+  end
+
+  return normalize_path(path)
+end
+
+local function label_from_path(path)
+  local normalized = normalize_path(path)
+  local home = normalize_path(HOME)
+
+  if normalized == '' then
+    return ''
+  end
+  if normalized == home then
+    return '~'
+  end
+
+  return basename(normalized)
+end
+
+local function title_path(title)
+  if not title or title == '' then
+    return ''
+  end
+
+  local candidate = title
+    :gsub('^[^:]+:', '')
+    :gsub('^%s+', '')
+
+  if not candidate:find '[/\\]' then
+    return ''
+  end
+
+  return normalize_path(candidate)
+end
+
+local function pane_title(source)
+  if not source then
+    return ''
+  end
+
+  if type(source.get_title) == 'function' then
+    local ok, value = pcall(function()
+      return source:get_title()
+    end)
+    if ok and value then
+      return value
+    end
+  end
+
+  return safe_field(source, 'title') or ''
+end
+
+local function foreground_process_name(source)
+  if not source then
+    return ''
+  end
+
+  if type(source.get_foreground_process_name) == 'function' then
+    local ok, value = pcall(function()
+      return source:get_foreground_process_name()
+    end)
+    if ok and value then
+      return value
+    end
+  end
+
+  return safe_field(source, 'foreground_process_name') or ''
+end
+
+local function source_label(source)
+  local cwd = label_from_path(path_from_uri(get_cwd_uri(source)))
+  if cwd ~= '' then
+    return cwd, 'cwd'
+  end
+
+  local title = pane_title(source)
+  local title_based = label_from_path(title_path(title))
+  if title_based ~= '' then
+    return title_based, 'title'
+  end
+
+  local process = basename(foreground_process_name(source))
+  if process ~= '' then
+    return process, 'process'
+  end
+
+  if title ~= '' then
+    return title, 'raw'
+  end
+
+  return 'shell', 'fallback'
+end
+
+local function cwd_name(source)
+  local label = source_label(source)
+  return label
+end
+
+local function cycle_pane(pane, step)
+  local tab = pane and pane:tab()
+  if not tab then
+    return
+  end
+
+  local panes = tab:panes_with_info()
+  if #panes < 2 then
+    return
+  end
+
+  table.sort(panes, function(a, b)
+    return a.index < b.index
+  end)
+
+  local active = 1
+  for index, info in ipairs(panes) do
+    if info.is_active then
+      active = index
+      break
+    end
+  end
+
+  local target = ((active - 1 + step) % #panes) + 1
+  panes[target].pane:activate()
+end
+
+local function rename_workspace_action()
+  return act.PromptInputLine {
+    description = 'Rename workspace',
+    action = wezterm.action_callback(function(window, _, line)
+      if not line or line == '' then
+        return
+      end
+
+      wezterm.mux.rename_workspace(wezterm.mux.get_active_workspace(), line)
+      window:toast_notification('WezTerm', 'Workspace renamed to ' .. line, nil, 2000)
+    end),
+  }
+end
+
+local function show_window_picker(window, pane)
+  local mux_window = window:mux_window()
+  if not mux_window then
+    return
+  end
+
+  local choices = {}
+  for _, info in ipairs(mux_window:tabs_with_info()) do
+    local tab = info.tab
+    local title = cwd_name(tab:active_pane())
+
+    table.insert(choices, {
+      id = tostring(info.index),
+      label = string.format('%d: %s', info.index, title),
+    })
+  end
+
+  window:perform_action(
+    act.InputSelector {
+      title = 'tmux windows',
+      choices = choices,
+      action = wezterm.action_callback(function(win, target_pane, id)
+        if id then
+          win:perform_action(act.ActivateTab(tonumber(id)), target_pane)
+        end
+      end),
+    },
+    pane
+  )
+end
+
+local function show_help(window, pane)
+  local choices = {}
+  local next_id = 1
+
+  local function help_key_label(key)
+    if key == 'Alt + Arrow keys' then
+      if IS_DARWIN then
+        return '^B \u{2325}\u{2190}\u{2193}\u{2191}\u{2192}'
+      end
+      return 'Ctrl+B Alt+\u{2190}\u{2193}\u{2191}\u{2192}'
+    end
+
+    if key == 'Arrow keys' then
+      if IS_DARWIN then
+        return '^B \u{2190}\u{2193}\u{2191}\u{2192}'
+      end
+      return 'Ctrl+B \u{2190}\u{2193}\u{2191}\u{2192}'
+    end
+
+    if IS_DARWIN then
+      return '^B ' .. key:upper()
+    end
+
+    return 'Ctrl+B ' .. key
+  end
+
+  for _, section in ipairs(HELP_SECTIONS) do
+    table.insert(choices, {
+      id = tostring(next_id),
+      label = '[' .. section.title .. ']',
+    })
+    next_id = next_id + 1
+
+    for _, entry in ipairs(section.entries) do
+      table.insert(choices, {
+        id = tostring(next_id),
+        label = string.format('  %-22s %s', help_key_label(entry.key), entry.description),
+      })
+      next_id = next_id + 1
+    end
+  end
+
+  window:perform_action(
+    act.InputSelector {
+      title = 'WezTerm tmux help',
+      choices = choices,
+      action = wezterm.action_callback(function() end),
+    },
+    pane
+  )
+end
+
+local function push_key(keys, key, mods, action)
+  table.insert(keys, {
+    key = key,
+    mods = mods,
+    action = action,
+  })
+end
+
+local function build_tmux_keys()
+  local keys = {}
+
+  push_key(keys, 'b', 'LEADER', act.SendKey { key = 'b', mods = 'CTRL' })
+  push_key(keys, 'c', 'LEADER', act.SpawnTab 'CurrentPaneDomain')
+  push_key(keys, 'n', 'LEADER', act.ActivateTabRelative(1))
+  push_key(keys, 'p', 'LEADER', act.ActivateTabRelative(-1))
+  push_key(keys, 'l', 'LEADER', act.ActivateLastTab)
+  push_key(keys, 'w', 'LEADER', wezterm.action_callback(show_window_picker))
+  push_key(keys, '&', 'LEADER', act.CloseCurrentTab { confirm = true })
+  push_key(keys, 'h', 'LEADER', wezterm.action_callback(show_help))
+
+  push_key(keys, '%', 'LEADER', act.SplitHorizontal { domain = 'CurrentPaneDomain' })
+  push_key(keys, '"', 'LEADER', act.SplitVertical { domain = 'CurrentPaneDomain' })
+  push_key(keys, 'x', 'LEADER', act.CloseCurrentPane { confirm = true })
+  push_key(keys, 'z', 'LEADER', act.TogglePaneZoomState)
+  push_key(keys, '!', 'LEADER', wezterm.action_callback(function(_, pane)
+    if pane then
+      pane:move_to_new_tab()
+    end
+  end))
+  push_key(keys, 'o', 'LEADER', wezterm.action_callback(function(_, pane)
+    cycle_pane(pane, 1)
+  end))
+  push_key(keys, 'q', 'LEADER', act.PaneSelect { alphabet = '1234567890' })
+  push_key(keys, '{', 'LEADER', act.RotatePanes 'CounterClockwise')
+  push_key(keys, '}', 'LEADER', act.RotatePanes 'Clockwise')
+  push_key(keys, '[', 'LEADER', act.ActivateCopyMode)
+  push_key(keys, ']', 'LEADER', act.PasteFrom 'Clipboard')
+
+  push_key(keys, 's', 'LEADER', act.ShowLauncherArgs { flags = 'FUZZY|WORKSPACES' })
+  push_key(keys, '$', 'LEADER', rename_workspace_action())
+  push_key(keys, '(', 'LEADER', act.SwitchWorkspaceRelative(-1))
+  push_key(keys, ')', 'LEADER', act.SwitchWorkspaceRelative(1))
+
+  for index = 0, 9 do
+    push_key(keys, tostring(index), 'LEADER', act.ActivateTab(index))
+  end
+
+  local directions = {
+    { key = 'LeftArrow', direction = 'Left' },
+    { key = 'DownArrow', direction = 'Down' },
+    { key = 'UpArrow', direction = 'Up' },
+    { key = 'RightArrow', direction = 'Right' },
+  }
+
+  for _, item in ipairs(directions) do
+    push_key(keys, item.key, 'LEADER', act.ActivatePaneDirection(item.direction))
+    push_key(keys, item.key, 'LEADER|ALT', act.AdjustPaneSize { item.direction, 5 })
+  end
+
+  return keys
+end
+
+local function status_cells(window, pane)
+  local date = wezterm.strftime '%Y-%m-%d %H:%M '
+  local workspace = window:active_workspace()
+  local key_table = window:active_key_table()
+
+  local left = {
+    { Foreground = { Color = TOKYO_NIGHT.success } },
+    { Text = ' ' .. workspace .. ' ' },
+  }
+
+  if window:leader_is_active() then
+    table.insert(left, { Foreground = { Color = TOKYO_NIGHT.border } })
+    table.insert(left, { Text = '| ' })
+    table.insert(left, { Foreground = { Color = TOKYO_NIGHT.warning } })
+    table.insert(left, { Text = 'PREFIX ' })
+  end
+
+  local right = {
+    { Foreground = { Color = TOKYO_NIGHT.muted } },
+    { Text = 'prefix+h ' },
+    { Foreground = { Color = TOKYO_NIGHT.border } },
+    { Text = '| ' },
+  }
+  if key_table then
+    right = {
+      { Foreground = { Color = TOKYO_NIGHT.accent_alt } },
+      { Text = 'mode ' .. key_table .. ' ' },
+      { Foreground = { Color = TOKYO_NIGHT.border } },
+      { Text = '| ' },
+    }
+  end
+  local right_tail = {
+    { Foreground = { Color = TOKYO_NIGHT.text } },
+    { Text = date },
+  }
+  for _, cell in ipairs(right_tail) do
+    table.insert(right, cell)
+  end
+
+  return left, right
+end
+
+local function tab_title(tab)
+  if tab.tab_title and tab.tab_title ~= '' then
+    return tab.tab_title
+  end
+  return cwd_name(tab.active_pane)
+end
+
+configure_platform(config)
+
+config.leader = { key = 'b', mods = 'CTRL', timeout_milliseconds = 1200 }
+config.disable_default_key_bindings = true
+config.key_map_preference = 'Mapped'
+
+-- Hangul glyphs usually need a slightly larger fallback scale to sit well next to Latin monospace fonts.
+config.font = wezterm.font_with_fallback(build_terminal_fonts())
+config.font_size = 11.0
+config.line_height = 1.02
 config.default_cursor_style = 'BlinkingBar'
 config.cursor_blink_rate = 800
+config.use_ime = true
 
--- 탭 바 위치 및 스타일
-config.use_fancy_tab_bar = false -- false로 해야 고전적인 탭 스타일(아래 colors 적용)이 잘 먹힘
+config.color_scheme = 'Tokyo Night'
 config.window_background_opacity = 0.95
-
-config.mouse_bindings = {
-    -- 드래그해서 선택을 마치면(Left Up) -> 자동으로 클립보드에 복사
-    {
-        event = {Up = {streak = 1, button = 'Left'}},
-        mods = 'NONE',
-        action = act.CompleteSelection 'Clipboard'
-    }, -- 마우스 우클릭(Right Down) -> 클립보드 내용 붙여넣기
-    {
-        event = {Down = {streak = 1, button = 'Right'}},
-        mods = 'NONE',
-        action = act.PasteFrom 'Clipboard'
-    }, -- Linux는 휠클릭
-    {
-        event = {Down = {streak = 1, button = 'Middle'}},
-        mods = 'NONE',
-        action = act.PasteFrom 'Clipboard'
-    }
-}
-
+if IS_DARWIN then
+  config.macos_window_background_blur = 40
+end
+config.window_decorations = 'RESIZE'
+config.window_padding = { left = 8, right = 8, top = 8, bottom = 8 }
+config.inactive_pane_hsb = { saturation = 0.9, brightness = 0.7 }
+config.scrollback_lines = 10000
 config.hyperlink_rules = wezterm.default_hyperlink_rules()
 
--- 우측 상태바 (Right Status Bar) 설정
--- 탭 바 오른쪽 빈 공간에 [워크스페이스 이름 | 날짜]을 표시
+config.use_fancy_tab_bar = false
+config.hide_tab_bar_if_only_one_tab = false
+config.show_new_tab_button_in_tab_bar = false
+config.show_tab_index_in_tab_bar = false
+config.tab_and_split_indices_are_zero_based = true
+config.tab_max_width = 40
+config.status_update_interval = 1000
 
-wezterm.on('update-right-status', function(window, pane)
-    local date = wezterm.strftime '%Y-%m-%d '
-    local workspace = window:active_workspace() -- 현재 워크스페이스 이름 가져오기
-    local key_table = window:active_key_table()
-    if key_table then key_table = 'TABLE: ' .. key_table end
-
-    -- 도움말 안내 문구
-    local help_text = (CMD == "SUPER" and "⌘" or "Ctrl") .. "+/ Help "
-
-    window:set_right_status(wezterm.format({
-        -- 1. 도움말 (보라색)
-        {Foreground = {Color = '#bb9af7'}}, {Text = help_text .. ' | '},
-
-        -- 2. 워크스페이스 (녹색 - 눈에 잘 띔)
-        {Foreground = {Color = '#9ece6a'}}, {Text = '󱂬 ' .. workspace}, -- 워크스페이스 아이콘 추가
-
-        -- 3. 키 테이블 (활성화 시에만 파란색으로 표시)
-        {Foreground = {Color = '#7aa2f7'}},
-        {Text = key_table and (' | ' .. key_table) or ''},
-
-        -- 4. 날짜 (연한 파란색)
-        {Foreground = {Color = '#c0caf5'}}, {Text = ' | ' .. date .. '  '}
-    }))
-end)
-
--- ---------------------------------------------------------
--- [키바인딩] 단축키 설정
--- ---------------------------------------------------------
-
-config.keys = {
-    -- 커맨드 팔레트 (VSCode 처럼 명령 검색) - Ctrl+Shift+P
-    {key = 'p', mods = CMD .. '|SHIFT', action = act.ActivateCommandPalette},
-    -- 복사: Win(Ctrl+Shift+C), Mac(Cmd+C) -> 맥은 보통 Shift 없이 씀
-    {key = 'c', mods = CMD .. '|SHIFT', action = act.CopyTo 'Clipboard'},
-    {key = 'v', mods = CMD .. '|SHIFT', action = act.PasteFrom 'Clipboard'},
-
-    -- 검색 모드: 로그 찾을 때 필수 (Ctrl+Shift+F)
-    {
-        key = 'f',
-        mods = CMD .. '|SHIFT',
-        action = act.Search 'CurrentSelectionOrEmptyString'
-    }, -- 폰트 크기 조절
-    {key = '+', mods = CMD, action = act.IncreaseFontSize},
-    {key = '-', mods = CMD, action = act.DecreaseFontSize},
-    {key = '0', mods = CMD, action = act.ResetFontSize},
-
-    -- 2. 화면 분할 (Ctrl + Opt + -/\)
-    {
-        key = '-',
-        mods = 'CTRL|' .. OPT,
-        action = act.SplitVertical {domain = 'CurrentPaneDomain'}
-    }, {
-        key = '\\',
-        mods = 'CTRL|' .. OPT,
-        action = act.SplitHorizontal {domain = 'CurrentPaneDomain'}
-    }, -- 3. 창(Pane) 이동 (Option + 방향키)
-    {key = 'LeftArrow', mods = OPT, action = act.ActivatePaneDirection 'Left'},
-    {key = 'RightArrow', mods = OPT, action = act.ActivatePaneDirection 'Right'},
-    {key = 'UpArrow', mods = OPT, action = act.ActivatePaneDirection 'Up'},
-    {key = 'DownArrow', mods = OPT, action = act.ActivatePaneDirection 'Down'},
-
-    -- 4. 창(Pane) 닫기 (Win: Ctrl+w, Mac: Cmd+w)
-    {key = 'w', mods = CMD, action = act.CloseCurrentPane {confirm = true}},
-
-    -- 5. 탭(Tab) 관리 (Win: Ctrl+t, Mac: Cmd+t)
-    {key = 't', mods = CMD, action = act.SpawnTab 'CurrentPaneDomain'},
-    -- 탭 이동
-    {key = 'Tab', mods = 'CTRL', action = act.ActivateTabRelative(1)}, -- 탭 이동은 보통 Ctrl+Tab이 국룰이라 고정
-    {key = 'Tab', mods = 'CTRL|SHIFT', action = act.ActivateTabRelative(-1)},
-
-    -- 6. 탭 번호로 바로 이동 (Win: Ctrl+1~9, Mac: Cmd+1~9)
-    {key = '1', mods = CMD, action = act.ActivateTab(0)},
-    {key = '2', mods = CMD, action = act.ActivateTab(1)},
-    {key = '3', mods = CMD, action = act.ActivateTab(2)},
-    {key = '4', mods = CMD, action = act.ActivateTab(3)},
-    {key = '5', mods = CMD, action = act.ActivateTab(4)},
-    {key = '6', mods = CMD, action = act.ActivateTab(5)},
-    {key = '7', mods = CMD, action = act.ActivateTab(6)},
-    {key = '8', mods = CMD, action = act.ActivateTab(7)},
-    {key = '9', mods = CMD, action = act.ActivateTab(-1)}, -- 마지막 탭
-    -- 7. Pane 크기 조절 (Option + Shift + 방향키)
-    {
-        key = 'LeftArrow',
-        mods = OPT .. '|SHIFT',
-        action = act.AdjustPaneSize {'Left', 3}
-    }, {
-        key = 'RightArrow',
-        mods = OPT .. '|SHIFT',
-        action = act.AdjustPaneSize {'Right', 3}
-    }, {
-        key = 'UpArrow',
-        mods = OPT .. '|SHIFT',
-        action = act.AdjustPaneSize {'Up', 3}
-    }, {
-        key = 'DownArrow',
-        mods = OPT .. '|SHIFT',
-        action = act.AdjustPaneSize {'Down', 3}
-    }, -- 리사이즈 모드 진입 (Alt + R / Opt + R)
-    {
-        key = 'r',
-        mods = OPT,
-        action = act.ActivateKeyTable {name = 'resize_pane', one_shot = false}
-    }, -- 8. Pane 줌 토글 (Ctrl + Option + Z)
-    {key = 'z', mods = 'CTRL|' .. OPT, action = act.TogglePaneZoomState},
-
-    -- 9. 현재 Pane을 새 탭으로 분리 (Ctrl + Option + T)
-    {
-        key = 't',
-        mods = 'CTRL|' .. OPT,
-        action = wezterm.action_callback(function(win, pane)
-            pane:move_to_new_tab()
-        end)
-    }, -- 워크스페이스 만들기
-    {
-        key = 's',
-        mods = CMD .. '|SHIFT',
-        action = act.ShowLauncherArgs {flags = 'WORKSPACES'}
-    }, {
-        key = 'r',
-        mods = CMD .. '|SHIFT',
-        action = act.PromptInputLine {
-            description = '(WezTerm) set workspace name:',
-            action = wezterm.action_callback(
-                function(window, pane, line)
-                    if line then
-                        wezterm.mux.rename_workspace(wezterm.mux
-                                                         .get_active_workspace(),
-                                                     line)
-                    end
-                end)
-        }
-    }, {
-        key = 'L',
-        mods = CMD .. '|SHIFT',
-        action = act.ShowLauncherArgs {flags = 'FUZZY|LAUNCH_MENU_ITEMS'}
-    }, -- ---------------------------------------------------------
-    -- [단축키 도움말 패널] 추가
-    -- ---------------------------------------------------------
-    {
-        key = '/',
-        mods = CMD, -- Win: Ctrl+/, Mac: Cmd+/
-        action = act.InputSelector {
-            title = "🚀 My Shortcut Guide",
-            choices = {
-                -- 1. Pane (창) 관련
-                {label = "Pane: 가로 분할 (Ctrl+" .. OPT .. "+\\)"},
-                {label = "Pane: 세로 분할 (Ctrl+" .. OPT .. "-)"},
-                {label = "Pane: 이동 (" .. OPT .. " + 방향키)"},
-                {
-                    label = "Pane: 크기 조절 (Shift+" .. OPT ..
-                        " + 방향키)"
-                },
-                {label = "Pane: 리사이즈 모드 진입 (" .. OPT .. "+R)"},
-                {label = "Pane: 줌(확대) 토글 (Ctrl+" .. OPT .. "+Z)"},
-                {
-                    label = "Pane: 현재 창을 새 탭으로 분리 (Ctrl+" ..
-                        OPT .. "+T)"
-                }, {label = "Pane: 닫기 (" .. CMD .. "+W)"}, {
-                    label = "Pane: 다음 창으로 포커스 (" .. CMD ..
-                        "+[ 또는 ]) - 내장"
-                }, -- 2. Tab / Workspace 관련
-                {label = "Tab: 새 탭 열기 (" .. CMD .. "+T)"},
-                {
-                    label = "Tab: 다음/이전 탭 이동 (Ctrl+Tab / Ctrl+Shift+Tab)"
-                }, {label = "Tab: 번호로 이동 (" .. CMD .. "+1~9)"},
-                {label = "Workspace: 이름 바꾸기 (" .. CMD .. "+Shift+R)"},
-                {label = "Workspace: 목록 보기 (" .. CMD .. "+Shift+S)"},
-
-                -- 3. 검색 및 선택 (Search & Selection)
-                {label = "Search: 로그 검색 (" .. CMD .. "+Shift+F)"},
-                {label = "Copy: 복사 (" .. CMD .. "+Shift+C)"},
-                {label = "Paste: 붙여넣기 (" .. CMD .. "+Shift+V)"},
-
-                -- 4. 시스템 및 유틸리티 (WezTerm 내장 핵심)
-                {
-                    label = "System: 명령 팔레트 실행 (" .. CMD ..
-                        "+Shift+P)"
-                }, {label = "View: 전체화면 토글 (" .. OPT .. "+Enter)"},
-                {label = "View: 폰트 크기 조절 (" .. CMD .. " + +/-/0)"},
-                {label = "View: 화면 스크롤 (Shift+PageUp/Down)"}, {
-                    label = "Window: 창 숨기기 (" .. CMD ..
-                        "+H) / 최소화 (" .. CMD .. "+M)"
-                }, {label = "Window: WezTerm 종료 (" .. CMD .. "+Q)"},
-
-                -- 5. 모드 조작
-                {label = "Mode: 리사이즈/검색 모드 탈출 (ESC)"},
-                {label = "Search Mode: 결과 이동 (Enter / Shift+Enter)"},
-                {label = "Search Mode: 검색모드 토글 (Ctrl+R)"}, -- 쉘
-                {
-                    label = "System: 쉘 선택 메뉴 열기 (" .. CMD ..
-                        "+Shift+L)"
-                }
-            },
-            action = wezterm.action_callback(
-                function(window, pane, id, label) end)
-        }
-    }
-}
-
--- ---------------------------------------------------------
--- [검색 모드] 프리징 방지를 위한 전용 키바인딩
--- ---------------------------------------------------------
--- 검색 모드에서는 별도의 key_table이 활성화됨.
--- 기본 키맵이 터미널 동작과 충돌하여 프리징이 발생할 수 있으므로
--- 검색에 필요한 키만 명시적으로 매핑한다.
-
-config.key_tables = {
-    resize_pane = {
-        {key = 'LeftArrow', action = act.AdjustPaneSize {'Left', 1}},
-        {key = 'RightArrow', action = act.AdjustPaneSize {'Right', 1}},
-        {key = 'UpArrow', action = act.AdjustPaneSize {'Up', 1}},
-        {key = 'DownArrow', action = act.AdjustPaneSize {'Down', 1}},
-        {key = 'Escape', action = 'PopKeyTable'},
-        {key = 'Enter', action = 'PopKeyTable'}
-    },
-    search_mode = {
-        -- Enter: 선택된 검색어 복사 모드로 진입 (혹은 뷰포트 이동)
-        {key = 'Enter', mods = 'NONE', action = act.CopyMode 'PriorMatch'},
-        {key = 'Enter', mods = 'SHIFT', action = act.CopyMode 'NextMatch'},
-
-        -- Ctrl+n/p: 검색 결과 위아래 이동 (Emacs 스타일)
-        {key = 'n', mods = 'CTRL', action = act.CopyMode 'NextMatch'},
-        {key = 'p', mods = 'CTRL', action = act.CopyMode 'PriorMatch'},
-
-        -- 위/아래 화살표: 검색 결과 이동
-        {key = 'UpArrow', mods = 'NONE', action = act.CopyMode 'PriorMatch'},
-        {key = 'DownArrow', mods = 'NONE', action = act.CopyMode 'NextMatch'},
-
-        -- Ctrl+r: 정규식 검색 모드 토글
-        {key = 'r', mods = 'CTRL', action = act.CopyMode 'CycleMatchType'},
-
-        -- 검색창 지우기 또는 검색어 입력 (입력 모드는 자동으로 활성화되지만 명시적 바인딩 가능)
-        {key = 'u', mods = 'CTRL', action = act.CopyMode 'ClearPattern'},
-
-        -- ESC: 검색 모드 종료
-        {key = 'Escape', mods = 'NONE', action = act.CopyMode 'Close'}
-    }
-}
-
--- ---------------------------------------------------------
--- [탭 바 색상 상세 설정]
--- ---------------------------------------------------------
 config.window_frame = {
-    font = wezterm.font {family = 'JetBrains Mono', weight = 'Bold'},
-    font_size = 11.0,
-    active_titlebar_bg = '#1e1e2e', -- 탭바 배경색 (더 어둡게)
-    inactive_titlebar_bg = '#1e1e2e'
+  font = wezterm.font_with_fallback(build_window_frame_fonts()),
+  font_size = 11.0,
+  active_titlebar_bg = TOKYO_NIGHT.bg,
+  inactive_titlebar_bg = TOKYO_NIGHT.bg,
 }
 
 config.colors = {
-    tab_bar = {
-        background = '#1e1e2e',
-
-        -- 활성화된 탭 스타일
-        active_tab = {
-            bg_color = '#7aa2f7',
-            fg_color = '#1e1e2e',
-            intensity = 'Bold'
-        },
-        inactive_tab = {bg_color = '#292e42', fg_color = '#545c7e'},
-        inactive_tab_hover = {bg_color = '#3b4261', fg_color = '#c0caf5'}
-    }
+  tab_bar = {
+    background = TOKYO_NIGHT.bg,
+    active_tab = {
+      bg_color = TOKYO_NIGHT.accent,
+      fg_color = TOKYO_NIGHT.bg,
+      intensity = 'Bold',
+    },
+    inactive_tab = {
+      bg_color = TOKYO_NIGHT.surface_alt,
+      fg_color = TOKYO_NIGHT.muted,
+    },
+    inactive_tab_hover = {
+      bg_color = TOKYO_NIGHT.border,
+      fg_color = TOKYO_NIGHT.text,
+    },
+  },
 }
 
--- ---------------------------------------------------------
--- [탭 타이틀] 현재 폴더명 표시 (Mac/Windows/Linux 호환)
--- ---------------------------------------------------------
+config.mouse_bindings = {
+  {
+    event = { Up = { streak = 1, button = 'Left' } },
+    mods = 'NONE',
+    action = act.CompleteSelection 'Clipboard',
+  },
+  {
+    event = { Down = { streak = 1, button = 'Right' } },
+    mods = 'NONE',
+    action = act.PasteFrom 'Clipboard',
+  },
+  {
+    event = { Down = { streak = 1, button = 'Middle' } },
+    mods = 'NONE',
+    action = act.PasteFrom 'Clipboard',
+  },
+}
 
---- current_working_dir에서 마지막 폴더명만 안전하게 추출
-local function get_current_working_dir(tab)
-    -- 1) pane에서 cwd 가져오기
-    local cwd_uri = tab.active_pane and tab.active_pane.current_working_dir
-    if not cwd_uri then return 'Terminal' end
+config.keys = build_tmux_keys()
 
-    -- 2) URL 객체 → file_path 문자열 추출
-    --    wezterm은 cwd를 URL userdata로 반환함 (e.g. "file:///Users/foo/project")
-    --    .file_path 속성으로 디코딩된 경로를 얻을 수 있음
-    local path = ''
-    if type(cwd_uri) == 'userdata' or type(cwd_uri) == 'table' then
-        path = cwd_uri.file_path or ''
-    elseif type(cwd_uri) == 'string' then
-        -- 혹시 문자열로 오는 경우: "file:///home/user/project" 형태
-        path = cwd_uri:match('file://[^/]*(/.+)') or cwd_uri
-    end
+wezterm.on('update-status', function(window, pane)
+  local left, right = status_cells(window, pane)
+  window:set_left_status(wezterm.format(left))
+  window:set_right_status(wezterm.format(right))
 
-    -- 3) Windows 경로 정규화: 백슬래시 → 슬래시
-    path = path:gsub('\\', '/')
+  local tab = pane and pane:tab()
+  local title = cwd_name(pane)
+  if tab and title ~= '' and tab:get_title() ~= title then
+    tab:set_title(title)
+  end
+end)
 
-    -- 4) 끝의 슬래시 제거 (e.g. "/home/user/project/" → "/home/user/project")
-    path = path:gsub('/$', '')
+wezterm.on('format-tab-title', function(tab, _, _, _, hover, max_width)
+  local background = TOKYO_NIGHT.surface_alt
+  local foreground = TOKYO_NIGHT.muted
 
-    -- 5) 마지막 슬래시 이후 부분 = 폴더명
-    local folder = path:match('([^/]+)$')
+  if tab.is_active then
+    background = TOKYO_NIGHT.accent
+    foreground = TOKYO_NIGHT.bg
+  elseif hover then
+    background = TOKYO_NIGHT.border
+    foreground = TOKYO_NIGHT.text
+  end
 
-    -- 6) 홈 디렉토리인 경우 (~) 또는 빈 경우 처리
-    if not folder or folder == '' then return '~' end
+  local title = wezterm.truncate_right(tab_title(tab), math.max(1, max_width - 2))
 
-    -- 홈 폴더명과 비교하여 ~ 표시
-    if folder == home_folder and path == home then return '~' end
-
-    return folder
-end
-
-wezterm.on('format-tab-title',
-           function(tab, tabs, panes, config, hover, max_width)
-    local title = get_current_working_dir(tab)
-
-    -- Tokyo Night 테마 기준 색상
-    local bg = '#1e1e2e'
-    local fg = '#545c7e'
-
-    if tab.is_active then
-        bg = '#7aa2f7'
-        fg = '#1e1e2e'
-    elseif hover then
-        bg = '#3b4261'
-        fg = '#c0caf5'
-    end
-
-    return {
-        {Background = {Color = bg}}, {Foreground = {Color = fg}},
-        {Text = '  ' .. title .. '  '}
-    }
+  return {
+    { Background = { Color = background } },
+    { Foreground = { Color = foreground } },
+    { Text = ' ' .. title .. ' ' },
+  }
 end)
 
 return config

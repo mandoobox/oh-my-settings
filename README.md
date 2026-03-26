@@ -46,13 +46,16 @@ ex) `.wezterm.lua` -> `wezterm.lua`
 
 ### 💻 Wezterm
 
-[Wezterm 설치](https://wezterm.org/installation.html)
+- [Sarasa Term 폰트 설치 - cjk 지원](https://github.com/be5invis/Sarasa-Gothic/releases)
+- [Wezterm 설치](https://wezterm.org/installation.html)
 
 ```shell
 cp .wezterm.lua ~
 ```
 
 `~` 위치에 `.wezterm.lua` 를 복사한다.
+
+단축키는 tmux참고, ctrl+b가 leader(prefix)키
 
 ### 🚫 God-gitignore
 
